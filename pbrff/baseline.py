@@ -6,7 +6,7 @@ from sklearn.model_selection import PredefinedSplit, GridSearchCV
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, f1_score
 
-def learn_svm(dataset, C_range, gamma_range, output_file, n_cpu, random_state):
+def learn_svm(dataset, C_range, gamma_range, output_file, n_cpu, k, nrun, deg, random_state):
     """Learn a SVM baseline.
 
     Using a validation set, hyperparameters C and gamma are selected
@@ -59,15 +59,24 @@ def learn_svm(dataset, C_range, gamma_range, output_file, n_cpu, random_state):
     train_time = (time.time() - start_time) * 1000
 
     # Computing relevant metrics
-    test_err = 1 - accuracy_score(dataset['y_T_test'], clf.predict(dataset['X_T_test']))
-    f1 = f1_score(dataset['y_T_test'], clf.predict(dataset['X_T_test']))
-    val_err = 1 - accuracy_score(dataset['y_S_valid'], clf.predict(dataset['X_S_valid']))
+    #test_err = 1 - accuracy_score(dataset['y_T_test'], clf.predict(dataset['X_T_test']))
+    #f1 = f1_score(dataset['y_T_test'], clf.predict(dataset['X_T_test']))
+    #val_err = 1 - accuracy_score(dataset['y_S_valid'], clf.predict(dataset['X_S_valid']))
+    #train_err = 1 - accuracy_score(dataset['y_S_train'], clf.predict(dataset['X_S_train']))
+
+    val_s_err = 1 - accuracy_score(dataset['y_S_valid'], clf.predict(dataset['X_S_valid']))
+    val_t_err = 1 - accuracy_score(dataset['y_T_valid'], clf.predict(dataset['X_T_valid']))
     train_err = 1 - accuracy_score(dataset['y_S_train'], clf.predict(dataset['X_S_train']))
+    test_err_t = 1 - accuracy_score(dataset['y_T_test'], clf.predict(dataset['X_T_test']))
+    f1_t = f1_score(dataset['y_T_test'], clf.predict(dataset['X_T_test']))
+    test_err_s = 1 - accuracy_score(dataset['y_S_test'], clf.predict(dataset['X_S_test']))
+    f1_s = f1_score(dataset['y_S_test'], clf.predict(dataset['X_S_test']))
 
     # Logging metrics and informations
     results = [dict([("dataset", dataset['name']), ("exp", 'baseline'), ("algo", 'SVM'),\
                     ("C", gs.best_params_['C']), ("gamma", gs.best_params_['gamma']), ("time", train_time),\
-                    ("train_error", train_err), ("val_error", val_err), ("test_error", test_err), ("f1", f1)])]
+                    ("train_error", train_err),("val_s_error", val_s_err), ("val_t_error", val_t_err), ("test_error_t", test_err_t), \
+                    ("f1_t", f1_t), ("test_error_s", test_err_s), ("f1_s", f1_s), ("k", k), ("run", nrun), ("degree", deg)])]
 
     with open(output_file, 'wb') as out_file:
         pickle.dump(results, out_file, protocol=4)

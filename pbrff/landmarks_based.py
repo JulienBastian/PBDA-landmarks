@@ -1,5 +1,7 @@
 from math import ceil, sqrt, exp, log
 
+import time 
+
 import pickle
 import numpy as np
 
@@ -96,7 +98,7 @@ class LandmarksBasedLearner(object):
         Empirical losses matrix (one loss per Fourier feature)
     """
 
-    def __init__(self, dataset, C_range, gamma, landmarks_selection_method, random_state=42):
+    def __init__(self, dataset, C_range, gamma, landmarks_selection_method, k, nrun, deg, random_state=42):
         self.dataset = dataset
         self.ns, self.d = self.dataset['X_S_train'].shape
         self.nt, self.d = self.dataset['X_T_train'].shape
@@ -105,6 +107,9 @@ class LandmarksBasedLearner(object):
         self.sigma = 1. / sqrt(2 * self.gamma)
         self.landmarks_selection_method = landmarks_selection_method
         self.random_state = check_random_state(random_state)
+        self.k=k
+        self.nrun=nrun
+        self.degree=deg
 
     def select_landmarks(self, nb_landmarks):
         """Select landmarks from a dataset using LandmarksSelector.
@@ -240,8 +245,8 @@ class LandmarksBasedLearner(object):
         self.b =b
         def kl_divergence(q):
             epsilon=0.0001
-            q=q+epsilon
-            return sum(q[i] * log(q[i]/(1/self.D)) for i in range(len(q)))
+            q=abs(q) #peut dépasser légérement des contraintes à certaines itérations
+            return sum(q[i] * log((q[i]/(1/self.D)) + epsilon) for i in range(len(q)))
 
         self.beta_da = beta_da
         Bounds(lb=0, ub=1, keep_feasible=False)
@@ -372,7 +377,7 @@ class LandmarksBasedLearner(object):
             mapped_X.append(np.sum(transformed_X* self.Q[i], 1))
         return np.array(mapped_X).T
     
-    def learn_pb_da(self, C):
+    def learn_pb_da(self):
         """Learn using PAC-Bayesion landmarks-based mappping.
 
         Returns
@@ -380,73 +385,47 @@ class LandmarksBasedLearner(object):
         results: dict
             Relevant metrics and informations.
         """
+        start_time=time.time()
         transformed_X_train = self.pb_mapping_DA(self.dataset['X_S_train'])
         transformed_X_S_valid = self.pb_mapping_DA(self.dataset['X_S_valid'])
         transformed_X_T_valid = self.pb_mapping_DA(self.dataset['X_T_valid'])
-        transformed_X_test = self.pb_mapping_DA(self.dataset['X_T_test'])
+        transformed_X_T_test = self.pb_mapping_DA(self.dataset['X_T_test'])
+        transformed_X_S_test = self.pb_mapping_DA(self.dataset['X_S_test'])
 
         # C search using a validation set
-        
-        clf = LinearSVC(C=C, random_state=self.random_state)
-        clf.fit(transformed_X_train, self.dataset['y_S_train'])
-
-        val_s_err = 1 - accuracy_score(self.dataset['y_S_valid'], clf.predict(transformed_X_S_valid))
-        val_t_err = 1 - accuracy_score(self.dataset['y_T_valid'], clf.predict(transformed_X_T_valid))
-
+        C_search = []
+        for C in self.C_range:
+            clf = LinearSVC(C=C, random_state=self.random_state)
+            clf.fit(transformed_X_train, self.dataset['y_S_train'])
+            s_err = 1 - accuracy_score(self.dataset['y_S_valid'], clf.predict(transformed_X_S_valid))
+            t_err = 1 - accuracy_score(self.dataset['y_T_valid'], clf.predict(transformed_X_T_valid))
+            C_search.append((s_err, t_err, C, clf))
 
         
         # Computing relevant metrics
         mean_max_q = np.mean(np.max(self.Q_DA, axis=1))
-        #val_err, C, clf = sorted(C_search, key=lambda x: x[0])[0]
+        val_s_err, val_t_err, C, clf = sorted(C_search, key=lambda x: x[0])[0]
         train_err = 1 - accuracy_score(self.dataset['y_S_train'], clf.predict(transformed_X_train))
-        y_pred = clf.predict(transformed_X_test)
-        test_err = 1 - accuracy_score(self.dataset['y_T_test'], y_pred)
-        f1 = f1_score(self.dataset['y_T_test'], y_pred)
+        y_t_pred = clf.predict(transformed_X_T_test)
+        test_err_t = 1 - accuracy_score(self.dataset['y_T_test'], y_t_pred)
+        f1_t = f1_score(self.dataset['y_T_test'], y_t_pred)
+        y_s_pred = clf.predict(transformed_X_S_test)
+        test_err_s = 1 - accuracy_score(self.dataset['y_S_test'], y_s_pred)
+        f1_s = f1_score(self.dataset['y_S_test'], y_s_pred)
 
+        end_time=time.time()
+
+        elapsed_time=end_time-start_time
         #plot decision boundary
 
-        """xMin = min(min(transformed_X_train[:, 0]), min(transformed_X_test[:, 0]))-0.1
-        xMax = max(max(transformed_X_train[:, 0]), max(transformed_X_test[:, 0]))+0.1
-        yMin = min(self.dataset['y_S_train'])-0.1
-        yMax = max(max(self.dataset['y_T_train']), max(self.dataset['y_T_test']))+0.1
-        xx, yy = np.meshgrid(np.arange(xMin, xMax, .1),
-                         np.arange(yMin, yMax, .1))
-        mesh = np.c_[xx.ravel(), yy.ravel()]
-
-        rows = 1
-        columns = 1
-        fig = plt.figure(1, figsize=(columns*10, rows*8))
-
-        c1 = "#3C4EC2"
-        c2 = "#B50927"
-
-        ax = fig.add_subplot(rows, columns,1)
-        ax.scatter(transformed_X_train[:, 0], transformed_X_train[:, 1], c=self.dataset['y_S_train'], s=[500]*len(transformed_X_train), marker="o", lw=0, edgecolors='black', cmap=ListedColormap([c1, c2]))
-        ax.scatter(transformed_X_test[:, 0], transformed_X_test[:, 1], c=self.dataset['y_T_test'], lw=1,
-               s=[500]*len(transformed_X_test), marker="P", edgecolors='black', cmap=ListedColormap([c1, c2]))
-        ax.set_xlim(xMin, xMax)
-        ax.set_ylim(yMin, yMax)
-
-        Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
-        minZ = np.min(Z)
-        maxZ = np.max(Z)
-        stepZ = (maxZ-minZ) / 10
-        levels = np.arange(minZ, maxZ+stepZ, stepZ)
-        ctrf = ax.contourf(xx, yy, Z, levels, cmap=plt.cm.RdBu, zorder=0)
-
-        ax.contour(xx, yy, Z, levels, cmap=plt.cm.RdBu, zorder=0)
-        ax.contour(xx, yy, Z, [0], colors=["purple"], zorder=3,
-               linestyles=["solid"], linewidths=[4])
-        fig.colorbar(ctrf, orientation='vertical')
-        fig.savefig("perc_l"+ str(self.percentage_landmarks) + "Beta" + str(self.beta) + "b" + str(self.b) + "c" + str(self.c) + ".pdf", bbox_inches="tight")
-        print("saved!!!")"""
+        
 
         return dict([("dataset", self.dataset['name']), ("exp", 'landmarks'), ("algo", 'PBDA'), ("method", self.landmarks_selection_method), \
-                    ("C", C), ("D", self.D), ("c", self.c),("b", self.b), ("n_landmarks", self.ns_landmarks), \
-                    ("gamma", self.gamma), ("beta_da", self.beta_da), ("train_error", train_err), ("val_s_error", val_s_err), ("val_t_error", val_t_err), ("test_error", test_err), \
-                    ("f1", f1), ("mean_max_q", mean_max_q)])
+                     ("D", self.D), ("C", C), ("c", self.c),("b", self.b), ("n_landmarks", self.ns_landmarks), \
+                    ("gamma", self.gamma), ("beta_da", self.beta_da), ("train_error", train_err), ("val_s_error", val_s_err), ("val_t_error", val_t_err), ("test_error_t", test_err_t), \
+                    ("f1_t", f1_t), ("test_error_s", test_err_s), ("f1_s", f1_s), ("mean_max_q", mean_max_q), ("time", elapsed_time), ("k", self.k), ("run", self.nrun), ("degree", self.degree)])
 
-    def learn_pb(self, C):
+    def learn_pb(self):
         """Learn using PAC-Bayesion landmarks-based mappping.
 
         Returns
@@ -454,33 +433,45 @@ class LandmarksBasedLearner(object):
         results: dict
             Relevant metrics and informations.
         """
+        start_time=time.time()
         transformed_X_train = self.pb_mapping(self.dataset['X_S_train'])
         transformed_X_S_valid = self.pb_mapping(self.dataset['X_S_valid'])
         transformed_X_T_valid = self.pb_mapping(self.dataset['X_T_valid'])
-        transformed_X_test = self.pb_mapping(self.dataset['X_T_test'])
+        transformed_X_T_test = self.pb_mapping(self.dataset['X_T_test'])
+        transformed_X_S_test = self.pb_mapping(self.dataset['X_S_test'])
 
         # C search using a validation set
 
-        clf = LinearSVC(C=C, random_state=self.random_state)
-        clf.fit(transformed_X_train, self.dataset['y_S_train'])
-       
-        val_s_err = 1 - accuracy_score(self.dataset['y_S_valid'], clf.predict(transformed_X_S_valid))
-        val_t_err = 1 - accuracy_score(self.dataset['y_T_valid'], clf.predict(transformed_X_T_valid))
+        C_search = []
+        for C in self.C_range:
+            clf = LinearSVC(C=C, random_state=self.random_state)
+            clf.fit(transformed_X_train, self.dataset['y_S_train'])
+            s_err = 1 - accuracy_score(self.dataset['y_S_valid'], clf.predict(transformed_X_S_valid))
+            t_err = 1 - accuracy_score(self.dataset['y_T_valid'], clf.predict(transformed_X_T_valid))
+            C_search.append((s_err, t_err, C, clf))
 
             
 
         # Computing relevant metrics
         mean_max_q = np.mean(np.max(self.Q, axis=1))
-        #val_err, C, clf = sorted(C_search, key=lambda x: x[0])[0]
+        val_s_err, val_t_err, C, clf = sorted(C_search, key=lambda x: x[0])[0]
         train_err = 1 - accuracy_score(self.dataset['y_S_train'], clf.predict(transformed_X_train))
-        y_pred = clf.predict(transformed_X_test)
-        test_err = 1 - accuracy_score(self.dataset['y_T_test'], y_pred)
-        f1 = f1_score(self.dataset['y_T_test'], y_pred)
+        y_t_pred = clf.predict(transformed_X_T_test)
+        test_err_t = 1 - accuracy_score(self.dataset['y_T_test'], y_t_pred)
+        f1_t = f1_score(self.dataset['y_T_test'], y_t_pred)
+        y_s_pred = clf.predict(transformed_X_S_test)
+        test_err_s = 1 - accuracy_score(self.dataset['y_S_test'], y_s_pred)
+        f1_s = f1_score(self.dataset['y_S_test'], y_s_pred)
+        end_time=time.time()
+
+        elapsed_time=end_time-start_time
 
         return dict([("dataset", self.dataset['name']), ("exp", 'landmarks'), ("algo", 'PB'), ("method", self.landmarks_selection_method), \
-                    ("C", C), ("D", self.D), ("n_landmarks", self.ns_landmarks), \
-                    ("gamma", self.gamma), ("beta", self.beta), ("train_error", train_err), ("val_s_error", val_s_err), ("val_t_error", val_t_err), ("test_error", test_err), \
-                    ("f1", f1), ("mean_max_q", mean_max_q)])
+                     ("D", self.D), ("C", C), ("n_landmarks", self.ns_landmarks), \
+                    ("gamma", self.gamma), ("beta", self.beta), ("train_error", train_err), ("val_s_error", val_s_err), ("val_t_error", val_t_err), ("test_error_t", test_err_t), \
+                    ("f1_t", f1_t), ("test_error_s", test_err_s), ("f1_s", f1_s), ("mean_max_q", mean_max_q), ("time", elapsed_time), ("k", self.k), ("run", self.nrun), ("degree", self.degree)])
+    
+    
     
 
     def rbf_mapping(self, X):
@@ -498,7 +489,7 @@ class LandmarksBasedLearner(object):
         """
         return np.exp(-self.gamma * cdist(X, self.landmarks_X, 'sqeuclidean'))
 
-    def learn_rbf(self, C):
+    def learn_rbf(self):
         """Learn a linear SVM over the PAC-Bayesian landmarks-based mapping.
 
         Returns
@@ -506,30 +497,41 @@ class LandmarksBasedLearner(object):
         results: dict
             Relevant metrics and informations.
         """
+        start_time=time.time()
         transformed_X_train = self.rbf_mapping(self.dataset['X_S_train'])
         transformed_X_S_valid = self.rbf_mapping(self.dataset['X_S_valid'])
         transformed_X_T_valid = self.rbf_mapping(self.dataset['X_T_valid'])
-        transformed_X_test = self.rbf_mapping(self.dataset['X_T_test'])
+        transformed_X_T_test = self.rbf_mapping(self.dataset['X_T_test'])
+        transformed_X_S_test = self.rbf_mapping(self.dataset['X_S_test'])
 
-        clf = LinearSVC(C=C, random_state=self.random_state)
-        clf.fit(transformed_X_train, self.dataset['y_S_train'])
-        val_s_err = 1 - accuracy_score(self.dataset['y_S_valid'], clf.predict(transformed_X_S_valid))
-        val_t_err = 1 - accuracy_score(self.dataset['y_T_valid'], clf.predict(transformed_X_T_valid))
+        C_search = []
+        for C in self.C_range:
+            clf = LinearSVC(C=C, random_state=self.random_state)
+            clf.fit(transformed_X_train, self.dataset['y_S_train'])
+            s_err = 1 - accuracy_score(self.dataset['y_S_valid'], clf.predict(transformed_X_S_valid))
+            t_err = 1 - accuracy_score(self.dataset['y_T_valid'], clf.predict(transformed_X_T_valid))
+            C_search.append((s_err, t_err, C, clf))
 
         # Computing relevant metrics
+        val_s_err, val_t_err, C, clf = sorted(C_search, key=lambda x: x[0])[0]
         train_err = 1 - accuracy_score(self.dataset['y_S_train'], clf.predict(transformed_X_train))
-        y_pred = clf.predict(transformed_X_test)
-        test_err = 1 - accuracy_score(self.dataset['y_T_test'], y_pred)
-        f1 = f1_score(self.dataset['y_T_test'], y_pred)
+        y_t_pred = clf.predict(transformed_X_T_test)
+        test_err_t = 1 - accuracy_score(self.dataset['y_T_test'], y_t_pred)
+        f1_t = f1_score(self.dataset['y_T_test'], y_t_pred)
+        y_s_pred = clf.predict(transformed_X_S_test)
+        test_err_s = 1 - accuracy_score(self.dataset['y_S_test'], y_s_pred)
+        f1_s = f1_score(self.dataset['y_S_test'], y_s_pred)
+        end_time=time.time()
+
+        elapsed_time=end_time-start_time
 
         return dict([("dataset", self.dataset['name']), ("exp", 'landmarks'), ("algo", 'RBF'), ("method", self.landmarks_selection_method), \
-                    ("C", C), ("n_landmarks", self.ns_landmarks), ("gamma", self.gamma),\
-                    ("train_error", train_err), ("val_s_error", val_s_err), ("val_t_error", val_t_err),("test_error", test_err), ("f1", f1)])
+                    ("n_landmarks", self.ns_landmarks), ("gamma", self.gamma), ("C", C), ("train_error", train_err), ("val_s_error", val_s_err), ("val_t_error", val_t_err), ("test_error_t", test_err_t), \
+                    ("f1_t", f1_t), ("test_error_s", test_err_s), ("f1_s", f1_s), ("time", elapsed_time), ("k", self.k), ("run", self.nrun), ("degree", self.degree)])
 
-
-def compute_landmarks_selection(args, dataset, C_range, gamma, random_state):
+def compute_landmarks_selection(args, dataset, C_range, gamma, k, nrun, deg, random_state):
     """Landmarks selection function for parallel processing."""
-    landmarks_based_learner = LandmarksBasedLearner(dataset, C_range, gamma, args['method'], random_state)
+    landmarks_based_learner = LandmarksBasedLearner(dataset, C_range, gamma, args['method'], k, nrun, deg, random_state)
     landmarks_based_learner.select_landmarks(args['nb_landmarks'])
 
     print(f"Processing: {args['nb_landmarks']} landmarks {args['method']} selection")
@@ -561,7 +563,7 @@ def compute_landmarks_based(args, beta_range):
 
     return args["algo"]
 
-def compute_landmarks_based_DA(args, beta_range, beta_DA_range, c_range, b_range, C_range):
+def compute_landmarks_based_DA(args, beta_range, beta_DA_range, c_range, b_range):
     """Landmarks-based learning function for parallel processing."""
     tmp_results = []
 
@@ -570,8 +572,7 @@ def compute_landmarks_based_DA(args, beta_range, beta_DA_range, c_range, b_range
 
     if args["algo"] == "rbf":
         print(f"Processing: rff with {args['nb_landmarks']} landmarks {args['method']}")
-        for C in C_range:
-            tmp_results.append(landmarks_based_learner.learn_rbf(C))
+        tmp_results.append(landmarks_based_learner.learn_rbf())
 
     elif args["algo"] == "pb_da":
         print(f"Processing: pb_da with {args['D']} features, {args['nb_landmarks']} landmarks {args['method']}")
@@ -583,20 +584,19 @@ def compute_landmarks_based_DA(args, beta_range, beta_DA_range, c_range, b_range
         for beta_da in beta_DA_range:
             for c in c_range:
                 for b in b_range:
-                    for C in C_range:
-                        landmarks_based_learner.compute_Q_DA(beta_da=beta_da, c=c, b=b)
-                        tmp_results.append(landmarks_based_learner.learn_pb_da(C))
+                    landmarks_based_learner.compute_Q_DA(beta_da=beta_da, c=c, b=b)
+                    tmp_results.append(landmarks_based_learner.learn_pb_da())
 
     elif args["algo"] == "pb":
         print(f"Processing: pb with {args['D']} features, {args['nb_landmarks']} landmarks {args['method']}")
         landmarks_based_learner.compute_loss(args['D'])
         for beta in beta_range:
-            for C in C_range:
-                landmarks_based_learner.compute_Q(beta)
-                tmp_results.append(landmarks_based_learner.learn_pb(C))
+            landmarks_based_learner.compute_Q(beta)
+            tmp_results.append(landmarks_based_learner.learn_pb())
 
     #pas DA, meme que la fonction de base mais la loss est deja calculée
     
+
     
 
     with open(args["output_file"], 'wb') as out_file:
