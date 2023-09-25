@@ -1,4 +1,4 @@
-# Pseudo-Bayesian Learning with Kernel Fourier Transform as Prior
+# Random Fourier Features for PAC-Bayesian Domain Adaptation
 This python code has been used to conduct the experiments
 presented in Section 5 of the following report https://julienbastian.github.io/files/Domain%20Adaptation%20from%20a%20PAC-Bayesian%20Random%20Features%20perspective.pdf
 
