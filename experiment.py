@@ -3,6 +3,8 @@ from functools import partial
 import multiprocessing
 from multiprocessing import Pool
 
+import time 
+
 import os
 from os.path import join, abspath, dirname, exists
 from os import makedirs
@@ -16,16 +18,14 @@ from sklearn.model_selection import train_test_split, ParameterGrid, StratifiedK
 from sklearn.datasets import make_moons
 
 from pbrff.data_loader import DataLoader
-from pbrff.baseline import learn_svm
+from pbrff.baseline import learn_svm, learn_TSVM, learn_dalc, learn_pbda
 from pbrff.greedy_kernel import GreedyKernelLearner, compute_greedy_kernel
 from pbrff.landmarks_based import compute_landmarks_selection, compute_landmarks_based, compute_landmarks_based_DA
 
 import warnings
 warnings.filterwarnings("ignore")
 
-##### Datasets DA
-
-from dataset import *
+##Python file to run the toy experiments
 
 RESULTS_PATH = os.environ.get('PBRFF_RESULTS_DIR', join(dirname(abspath(__file__)), "results"))
 
@@ -47,15 +47,13 @@ def make_moons_da(n_samples=50, rotation=50, noise=0.15, random_state=0):
 def main():
     parser = argparse.ArgumentParser(description="PAC-Bayes RFF Experiment")
     parser.add_argument('-d', '--dataset', type=str, default="breast")
-    ###### datasets DA
-    parser.add_argument('-dsource', '--datasetsource', type=str, default="breast")
-    parser.add_argument('-dtarget', '--datasettarget', type=str, default="breast")
-    ######
     parser.add_argument('-e', '--experiments', type=str, nargs='+', default=["landmarks_based"])
     parser.add_argument('-l', '--landmarks-method', type=str, nargs='+', default=["random"])
     parser.add_argument('-n', '--n-cpu', type=int, default=-1)
+    parser.add_argument('-r', '--reversevalidation', type=str, default="no")
     args = parser.parse_args()
 
+    reversevalidation=args.reversevalidation
     # Setting random seed for repeatability
     random_seed = 1062023
     #random_state = check_random_state(random_seed)
@@ -76,49 +74,22 @@ def main():
     for path_name, path in paths.items():
         if (not exists(path)): makedirs(path)
 
-    #two moons dataset
-
-    ###### datasets DA
-
-    """source_data = dataset_from_svmlight_file(args.datasetsource)
-    target_data = dataset_from_svmlight_file(args.datasettarget, source_data.get_nb_features())
-    source_data.reshape_features(target_data.get_nb_features())
-
-    X_source=source_data.X
-    y_source=source_data.Y
-
-    X_target=target_data.X
-    y_target=target_data.Y"""
-    ######
-
-
-    # Loading dataset
-    #dataloader = DataLoader(random_state=random_state)
-    #X_source, X_target, y_source, y_target = dataloader.load(args.dataset)
-
-
-    ####Datasets
-
-    ##Génération d'un source 
+    ##Source dataset 
 
     X_S_test, y_S_test, nul, nul= make_moons_da(6000, rotation=00, noise=0.1, random_state=random_state)
     
-    #X_source, X_trash, y_source, y_trash = train_test_split(X_source, y_source, test_size=0.8, random_state=random_state)
-    #X_target, X_trash, y_target, y_trash = train_test_split(X_target, y_target, test_size=0.8, random_state=random_state)
-
-    #degrees=[10,20,30,40,50,70, 90]
-    degrees=[90]
+    degrees=[10,20,30,40,50,70,90]
     n_runs=10
     nbFoldValid=5
     for deg in degrees:
         nul, nul, X_T_test, y_T_test= make_moons_da(6000, rotation=deg, noise=0.1, random_state=random_state)
         for run in range(n_runs):
-            X_Source_train, y_Source_train, X_Target_train, y_Target_train =make_moons_da(600, rotation=deg, noise=0.1, random_state=int(random_state*(run+1)))
-            #### kfold ici
-            skf = StratifiedKFold(n_splits=nbFoldValid, shuffle=True) # initialisation CV
-            foldsTrainValidSource = list(skf.split(X_Source_train, y_Source_train)) # création des groupes
-            foldsTrainValidTarget = list(skf.split(X_Target_train, y_Target_train)) # création des groupes
+            X_Source_train, y_Source_train, X_Target_train, y_Target_train =make_moons_da(2000, rotation=deg, noise=0.1, random_state=int(random_state*(run+1)))
+            skf = StratifiedKFold(n_splits=nbFoldValid, shuffle=True, random_state=int(random_state*(run+1))) 
+            foldsTrainValidSource = list(skf.split(X_Source_train, y_Source_train)) 
+            foldsTrainValidTarget = list(skf.split(X_Target_train, y_Target_train))
             for iFoldVal in range(nbFoldValid):
+                    start_time=time.time()
                     idxTrainSource, idxValidSource = foldsTrainValidSource[iFoldVal]
                     idxTrainTarget, idxValidTarget = foldsTrainValidTarget[iFoldVal]
                     X_S_train=X_Source_train[idxTrainSource]
@@ -133,19 +104,20 @@ def main():
                     X_T_valid=X_Target_train[idxValidTarget]
                     y_T_valid=y_Target_train[idxValidTarget]
 
-                    #### Entrainement ici
-                    # baseline ici ?
-                    # avec passsages des paramètres k du fold, deg, run
 
                     dataset = {'name': args.dataset,
                                'X_S_train': X_S_train, 'X_T_train': X_T_train, 'X_S_valid': X_S_valid, 'X_T_test': X_T_test,'X_S_test': X_S_test, 'X_T_valid': X_T_valid,
                                'y_S_train': y_S_train, 'y_T_train': y_T_train, 'y_S_valid': y_S_valid, 'y_T_test': y_T_test, 'y_S_test': y_S_test,'y_T_valid': y_T_valid}
                     hps = {'gamma': np.logspace(-7, 2, 10),
-                            'C': np.logspace(-2, 4, 3),
+                            'C': [0.1, 10, 100],
                             'beta': np.logspace(-3, 3, 3),
-                            'beta_da': np.logspace(-3, 3, 3),
-                            'c':[10.0, 1.0, 0.1, 0.01],
-                            'b':[10.0, 1.0, 0.1, 0.01],
+                            'beta_da': [10.0, 1.0, 0.01],
+                            'c':[10.0, 1.0, 0.01],
+                            'b':[10.0, 1.0, 0.01],
+                            'C_dalc' : [10.0, 1.0, 0.01],
+                            'B_dalc' : [10.0, 1.0, 0.01],
+                            'C_pbda' : [10.0, 1.0, 0.01],
+                            'A_pbda' : [10.0, 1.0, 0.01],
                             'landmarks_percentage': [0.01, 0.05, 0.1, 0.15, 0.20, 0.25],
                             'nb_landmarks':[2,4,8,16],
                             'landmarks_D': [4, 8, 16],
@@ -156,7 +128,6 @@ def main():
                                3500, 4000, 4500, 5000]}
                     
                     svm_file = join(paths['baseline'], f"svm_degree_{deg}_k_{iFoldVal+1}_run_{run+1}.pkl")
-                    #if not(exists(svm_file)):
                     print(f"fold {iFoldVal+1}, run {run+1}, degree {deg}")
                     learn_svm(dataset=dataset,
                                 C_range=hps['C'],
@@ -172,6 +143,47 @@ def main():
                         svm_results = pickle.load(in_file)
 
                     gamma = svm_results[0]["gamma"]
+                    
+
+                    tsvm_file = join(paths['baseline'], f"tsvm_degree_{deg}_k_{iFoldVal+1}_run_{run+1}.pkl")
+
+                    learn_TSVM(dataset=dataset,
+                                C_range=hps['C'],
+                                gamma=gamma,
+                                output_file=tsvm_file,
+                                n_cpu=n_cpu,
+                                k=iFoldVal+1,
+                                nrun=run+1,
+                                deg=deg,
+                                random_state=int(random_state*(run+1)*(iFoldVal+1)),
+                                reverse=reversevalidation)
+                    
+                    dalc_file = join(paths['baseline'], f"dalc_degree_{deg}_k_{iFoldVal+1}_run_{run+1}.pkl")
+
+                    learn_dalc(dataset=dataset,
+                                C_dalc_range=hps['C_dalc'],
+                                B_dalc_range=hps['B_dalc'],
+                                output_file=dalc_file,
+                                k=iFoldVal+1,
+                                nrun=run+1,
+                                deg=deg,
+                                random_state=int(random_state*(run+1)*(iFoldVal+1)),
+                                reverse=reversevalidation)
+                    
+                    pbda_file = join(paths['baseline'], f"pbda_degree_{deg}_k_{iFoldVal+1}_run_{run+1}.pkl")
+
+                    learn_pbda(dataset=dataset,
+                                C_pbda_range=hps['C_pbda'],
+                                A_pbda_range=hps['A_pbda'],
+                                output_file=pbda_file,
+                                k=iFoldVal+1,
+                                nrun=run+1,
+                                deg=deg,
+                                random_state=int(random_state*(run+1)*(iFoldVal+1)),
+                                reverse=reversevalidation)
+
+                    
+
 
                     if "landmarks_based" in args.experiments:
 
@@ -217,136 +229,14 @@ def main():
                                                                                     for f, p in results_files.items() if not(exists(f))]
                         if results_to_compute:
                             parallel_func = partial(compute_landmarks_based_DA,
-                                    beta_range=hps['beta'], beta_DA_range=hps['beta_da'], c_range=hps['c'], b_range=hps['b'])
+                                    beta_range=hps['beta'], beta_DA_range=hps['beta_da'], c_range=hps['c'], b_range=hps['b'], reverse=reversevalidation)
 
                             computed_results = list(Pool(processes=n_cpu).imap(parallel_func, results_to_compute))
+                        end_time=time.time()
 
-            ####
+                        elapsed_time=end_time-start_time
+                        print(f"temps pour la fold : ", elapsed_time)
 
-            #### Concaténation des resultats des k fold pour le run
-        #### Concaténation des resultats des n_runs pour le deg
-
-            #X_S_train, X_S_valid, y_S_train, y_S_valid = train_test_split(X_source, y_source, test_size=0.2, random_state=random_state)        
-            #X_T_train, X_T_test, y_T_train, y_T_test = train_test_split(X_target, y_target, test_size=0.2, random_state=random_state)
-            #X_T_train, X_T_valid, y_T_train, y_T_valid = train_test_split(X_T_train, y_T_train, test_size=0.2, random_state=random_state)
-    
-    #dataset = {'name': args.dataset,
-    #           'X_train': X_S_train, 'X_valid': X_S_valid, 'X_test': X_T_test,
-    #           'y_train': y_S_train, 'y_valid': y_S_valid, 'y_test': y_T_test}
-    dataset = {'name': args.dataset,
-               'X_S_train': X_S_train, 'X_T_train': X_T_train, 'X_S_valid': X_S_valid, 'X_T_test': X_T_test,'X_S_test': X_S_test, 'X_T_valid': X_T_valid,
-               'y_S_train': y_S_train, 'y_T_train': y_T_train, 'y_S_valid': y_S_valid, 'y_T_test': y_T_test, 'y_S_test': y_S_test,'y_T_valid': y_T_valid}
-
-
-    # HPs for landmarks-based and greedy kernel learning experiments
-    hps = {'gamma': np.logspace(-7, 2, 10),
-           'C': np.logspace(-2, 4, 5),
-           'beta': np.logspace(-3, 3, 5),
-           'beta_da': np.logspace(-3, 3, 5),
-           'c':[10.0, 1.0, 0.1, 0.01],
-           'b':[10.0, 1.0, 0.1, 0.01],
-           'landmarks_percentage': [0.01, 0.05, 0.1, 0.15, 0.20, 0.25],
-           'nb_landmarks':[2,4,6,12,16,20],
-           'landmarks_D': [8, 16, 32, 64],
-           'rho': [1.0, 0.1, 0.01, 0.001, 0.0001],
-           'greedy_kernel_N': 20000,
-           'greedy_kernel_D': [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 120, 140, 160, 180, 200, 225, 250, 275,\
-                               300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1250, 1500, 1750, 2000, 2500, 3000,\
-                               3500, 4000, 4500, 5000]}
-        
-
-    ### Experiments ###
-
-    """# Baseline (SVM)
-    svm_file = join(paths['baseline'], "svm.pkl")
-    if not(exists(svm_file)):
-        learn_svm(dataset=dataset,
-                  C_range=hps['C'],
-                  gamma_range=hps['gamma'],
-                  output_file=svm_file,
-                  n_cpu=n_cpu,
-                  random_state=random_state)
-
-    with open(svm_file, 'rb') as in_file:
-        svm_results = pickle.load(in_file)
-
-    gamma = svm_results[0]["gamma"]
-
-
-    # Landmarks-based learning
-    if "landmarks_based" in args.experiments:
-
-        # Initializing landmarks-based learners by selecting landmarks according to methods
-        param_grid = ParameterGrid([{'method': args.landmarks_method, 'nb_landmarks': hps['nb_landmarks']}])
-        param_grid = list(param_grid)
-
-        random_state.shuffle(param_grid)
-        results_files = {join(paths['cache'], f"{p['method']}_landmarks_based_learner_{p['nb_landmarks']}.pkl"): p \
-                                                                                                            for p in param_grid}
-        results_to_compute = [dict({"output_file":f}, **p) for f, p in results_files.items() if not(exists(f))]
-
-        if results_to_compute:
-
-            parallel_func = partial(compute_landmarks_selection,
-                                    dataset=dataset,
-                                    C_range=hps['C'],
-                                    gamma=gamma,
-                                    random_state=random_state)
-
-            computed_results = list(Pool(processes=n_cpu).imap(parallel_func, results_to_compute))
-
-        # Learning
-        param_grid = ParameterGrid([{'algo': ['pb_da'], 'D': hps['landmarks_D'], 'method': args.landmarks_method, \
-                                                                                       'nb_landmarks': hps['nb_landmarks']},
-                                    {'algo': ['pb'], 'D': hps['landmarks_D'], 'method': args.landmarks_method, \
-                                                                                       'nb_landmarks': hps['nb_landmarks']},
-                                    {'algo': ['rbf'], 'method': args.landmarks_method, 'nb_landmarks': hps['nb_landmarks']}])
-        param_grid = list(param_grid)
-        random_state.shuffle(param_grid)
-        results_files = {join(paths[f"landmarks_based_{p['method']}"], f"{p['algo']}_{p['nb_landmarks']}" \
-                                                        + (f"_{p['D']}.pkl" if 'D' in p else ".pkl")): p for p in param_grid}
-
-        results_to_compute = [dict({"output_file":f, "input_file": join(paths['cache'], \
-                                    f"{p['method']}_landmarks_based_learner_{p['nb_landmarks']}.pkl")}, **p) \
-                                                                                    for f, p in results_files.items() if not(exists(f))]
-        if results_to_compute:
-            parallel_func = partial(compute_landmarks_based_DA,
-                                    beta_range=hps['beta'], beta_DA_range=hps['beta_da'], c_range=hps['c'], b_range=hps['b'], C_range=hps['C'])
-
-            computed_results = list(Pool(processes=n_cpu).imap(parallel_func, results_to_compute))
-"""
-    # Greedy Kernel Learning
-    if "greedy_kernel" in args.experiments:
-
-        # Initializing greedy kernel learner
-        greedy_kernel_learner_cache_file = join(paths['cache'], "greedy_kernel_learner.pkl")
-        if not exists(greedy_kernel_learner_cache_file):
-            greedy_kernel_learner = GreedyKernelLearner(dataset, hps['C'], gamma, hps['greedy_kernel_N'], random_state)
-            greedy_kernel_learner.sample_omega()
-            greedy_kernel_learner.compute_loss()
-
-            with open(greedy_kernel_learner_cache_file, 'wb') as out_file:
-                pickle.dump(greedy_kernel_learner, out_file, protocol=4)
-
-        param_grid = ParameterGrid([{'algo': ["pbrff"], 'param': hps['beta']},
-                                    {'algo': ["okrff"], 'param': hps['rho']},
-                                    {'algo': ["rff"]}])
-
-        param_grid = list(param_grid)
-        random_state.shuffle(param_grid)
-        results_files = {join(paths['greedy_kernel'], f"{p['algo']}" + (f"_{p['param']}.pkl" if 'param' in p else ".pkl")): p \
-                                                                                                            for p in param_grid}
-        results_to_compute = [dict({"output_file":f}, **p) for f, p in results_files.items() if not(exists(f))]
-
-        if results_to_compute:
-            parallel_func = partial(compute_greedy_kernel,
-                                    greedy_kernel_learner_file=greedy_kernel_learner_cache_file,
-                                    gamma=gamma,
-                                    D_range=hps['greedy_kernel_D'],
-                                    random_state=random_state)
-
-            computed_results = list(Pool(processes=n_cpu).imap(parallel_func, results_to_compute))
-            
     print("### DONE ###")
 
 if __name__ == '__main__':
